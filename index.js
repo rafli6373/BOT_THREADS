@@ -73,66 +73,7 @@ function logAiReply({ provider, model, reply, to }) {
   console.log('\x1b[32m╚═════════════════════════════════════════════════════╝\x1b[0m\n');
 }
 
-const BANNER_FRAMES = [
-  // Frame 1: Cyan
-  `\x1b[36m
-  ██████╗  █████╗ ██╗   ██╗███╗   ███╗██╗██████╗  █████╗ 
-  ██╔══██╗██╔══██╗╚██╗ ██╔╝████╗ ████║██║██╔══██╗██╔══██╗
-  ██████╔╝███████║ ╚████╔╝ ██╔████╔██║██║██████╔╝███████║
-  ██╔═══╝ ██╔══██║  ╚██╔╝  ██║╚██╔╝██║██║██╔══██╗██╔══██║
-  ██║     ██║  ██║   ██║   ██║ ╚═╝ ██║██║██║  ██║██║  ██║
-  ╚═╝     ╚═╝  ╚═╝   ╚═╝   ╚═╝     ╚═╝╚═╝╚═╝  ╚═╝╚═╝  ╚═╝
-
-             ⚡  P A Y M I R A   B O T   A I  ⚡
-\x1b[0m`,
-
-  // Frame 2: Magenta
-  `\x1b[35m
-  ██████╗  █████╗ ██╗   ██╗███╗   ███╗██╗██████╗  █████╗ 
-  ██╔══██╗██╔══██╗╚██╗ ██╔╝████╗ ████║██║██╔══██╗██╔══██╗
-  ██████╔╝███████║ ╚████╔╝ ██╔████╔██║██║██████╔╝███████║
-  ██╔═══╝ ██╔══██║  ╚██╔╝  ██║╚██╔╝██║██║██╔══██╗██╔══██║
-  ██║     ██║  ██║   ██║   ██║ ╚═╝ ██║██║██║  ██║██║  ██║
-  ╚═╝     ╚═╝  ╚═╝   ╚═╝   ╚═╝     ╚═╝╚═╝╚═╝  ╚═╝╚═╝  ╚═╝
-
-             ⚡  P A Y M I R A   B O T   A I  ⚡
-\x1b[0m`,
-
-  // Frame 3: Yellow
-  `\x1b[33m
-  ██████╗  █████╗ ██╗   ██╗███╗   ███╗██╗██████╗  █████╗ 
-  ██╔══██╗██╔══██╗╚██╗ ██╔╝████╗ ████║██║██╔══██╗██╔══██╗
-  ██████╔╝███████║ ╚████╔╝ ██╔████╔██║██║██████╔╝███████║
-  ██╔═══╝ ██╔══██║  ╚██╔╝  ██║╚██╔╝██║██║██╔══██╗██╔══██║
-  ██║     ██║  ██║   ██║   ██║ ╚═╝ ██║██║██║  ██║██║  ██║
-  ╚═╝     ╚═╝  ╚═╝   ╚═╝   ╚═╝     ╚═╝╚═╝╚═╝  ╚═╝╚═╝  ╚═╝
-
-             ⚡  P A Y M I R A   B O T   A I  ⚡
-\x1b[0m`,
-
-  // Frame 4: Bright Green
-  `\x1b[32m
-  ██████╗  █████╗ ██╗   ██╗███╗   ███╗██╗██████╗  █████╗ 
-  ██╔══██╗██╔══██╗╚██╗ ██╔╝████╗ ████║██║██╔══██╗██╔══██╗
-  ██████╔╝███████║ ╚████╔╝ ██╔████╔██║██║██████╔╝███████║
-  ██╔═══╝ ██╔══██║  ╚██╔╝  ██║╚██╔╝██║██║██╔══██╗██╔══██║
-  ██║     ██║  ██║   ██║   ██║ ╚═╝ ██║██║██║  ██║██║  ██║
-  ╚═╝     ╚═╝  ╚═╝   ╚═╝   ╚═╝     ╚═╝╚═╝╚═╝  ╚═╝╚═╝  ╚═╝
-
-             ⚡  P A Y M I R A   B O T   A I  ⚡
-\x1b[0m`
-];
-
-async function playAnimatedBanner() {
-  // Animasi Glitch Neon Pembuka Tanpa Border
-  for (let i = 0; i < BANNER_FRAMES.length * 2; i++) {
-    console.clear();
-    console.log(BANNER_FRAMES[i % BANNER_FRAMES.length]);
-    await sleep(150);
-  }
-
-  // Tampilan Final PAYMIRA BOT AI
-  console.clear();
+function printBanner() {
   console.log(`\x1b[36m
   ██████╗  █████╗ ██╗   ██╗███╗   ███╗██╗██████╗  █████╗ 
   ██╔══██╗██╔══██╗╚██╗ ██╔╝████╗ ████║██║██╔══██╗██╔══██╗
@@ -584,24 +525,10 @@ async function checkAndReply() {
 }
 
 // ========================================================
-// START BOT DENGAN ANIMASI ASCII
+// START BOT
 // ========================================================
-let isProcessing = false;
-let spinnerIndex = 0;
-const SPINNER_FRAMES = ['⠋', '⠙', '⠹', '⠸', '⠼', '⠴', '⠦', '⠧', '⠇', '⠏'];
-
-// Animasi Spinner Bergerak Real-Time
-setInterval(() => {
-  if (!isProcessing) {
-    const frame = SPINNER_FRAMES[spinnerIndex % SPINNER_FRAMES.length];
-    spinnerIndex++;
-    const now = new Date().toLocaleTimeString('id-ID');
-    process.stdout.write(`\r\x1b[36m[ ${frame} ]\x1b[0m \x1b[35m[${now}]\x1b[0m \x1b[1m⚡ PAYMIRA BOT AI\x1b[0m memantau Threads...   `);
-  }
-}, 150);
-
 async function start() {
-  await playAnimatedBanner();
+  printBanner();
 
   // Sinkronisasi otomatis saat bot baru diupload/dinyalakan
   // Ini menandai semua mention & komentar lama agar bot TIDAK membalas pesan masa lalu
@@ -613,10 +540,13 @@ async function start() {
       const replies = await getThreadReplies(t.id);
       for (const r of replies) saveRepliedId(r.id);
     }
-    console.log('[✓] Sinkronisasi selesai. Bot hanya merespon pesan BARU mulai sekarang!\n');
+    console.log('[✓] Sinkronisasi selesai. Bot siap merespon pesan baru!\n');
   } catch (e) {
     console.warn('[!] Catatan sinkronisasi awal:', e.message);
   }
+
+  console.log(`[i] ⚡ PAYMIRA BOT AI aktif & memantau setiap ${CHECK_INTERVAL_SECONDS} detik...`);
+  console.log('[i] Menunggu mention atau komentar masuk dari Threads...\n');
 
   checkAndReply();
   setInterval(checkAndReply, parseInt(CHECK_INTERVAL_SECONDS, 10) * 1000);
