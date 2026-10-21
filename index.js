@@ -23,9 +23,9 @@ let {
 const AI_SYSTEM_PROMPT = SYSTEM_PROMPT || 
 `Anda adalah asisten pakar multidisiplin yang menjunjung tinggi kejujuran, objektivitas, dan profesionalisme. Anda memiliki wawasan luas di berbagai cabang ilmu pengetahuan, dengan keahlian mendalam pada analisis politik dan ekonomi, baik di tingkat nasional (Indonesia) maupun global. Dalam setiap tanggapan, berikan analisis yang tajam, terstruktur, dan berbasis data atau fakta yang valid. Sampaikan kebenaran secara lugas tanpa bias, koreksi asumsi yang keliru secara konstruktif, dan nyatakan secara transparan jika suatu informasi bersifat spekulatif atau belum terverifikasi.
 
-PENTING (Batasan Platform Threads):
+PANDUAN FORMAT (Platform Threads):
 - Sampaikan analisis Anda secara padat, lugas, berbobot, tajam, dan tidak bertele-tele.
-- Panjang tanggapan MAKSIMAL 420 karakter agar muat sempurna dalam batas karakter postingan Threads.`;
+- Jika menganalisis atau membaca gambar/dokumen/infografis (Vision/OCR), jelaskan poin-poin pentingnya secara rinci dan tuntas. Sistem akan otomatis membagi balasan menjadi rangkaian thread bersambung jika teks panjang.`;
 
 // Bersihkan token dan username dari karakter aneh/spasi/tanda kutip
 const CLEAN_TOKEN = (THREADS_ACCESS_TOKEN || '').replace(/["'\s]/g, '');
@@ -87,7 +87,7 @@ function printBanner() {
 }
 
 // ========================================================
-// DATABASE PENYIMPAN ID KOMENTAR LOKAL
+// DATABASE PENYIMPAN ID KOMENTAR LOKAL (SET IN-MEMORY + FILE)
 // ========================================================
 function getRepliedIds() {
   if (!fs.existsSync(DB_FILE)) {
@@ -101,21 +101,32 @@ function getRepliedIds() {
   }
 }
 
-function saveRepliedId(id) {
-  const ids = getRepliedIds();
-  ids.push(id);
-  if (ids.length > 2000) ids.shift();
-  fs.writeFileSync(DB_FILE, JSON.stringify(ids, null, 2));
+const repliedIdsSet = new Set(getRepliedIds());
+
+function hasReplied(id) {
+  if (!id) return false;
+  return repliedIdsSet.has(id);
 }
 
-// Bersihkan respon AI
+function saveRepliedId(id) {
+  if (!id) return;
+  repliedIdsSet.add(id);
+  const ids = Array.from(repliedIdsSet);
+  if (ids.length > 2000) {
+    const toRemove = ids.slice(0, ids.length - 2000);
+    for (const rem of toRemove) repliedIdsSet.delete(rem);
+  }
+  try {
+    fs.writeFileSync(DB_FILE, JSON.stringify(Array.from(repliedIdsSet), null, 2));
+  } catch (err) {
+    console.warn('[!] Gagal menulis ke replied_ids.json:', err.message);
+  }
+}
+
+// Bersihkan respon AI dari tag berpikir <think>
 function cleanAiResponse(text) {
   if (!text) return '';
-  let cleaned = text.replace(/<think>[\s\S]*?<\/think>/gi, '').trim();
-  if (cleaned.length > 480) {
-    cleaned = cleaned.substring(0, 477) + '...';
-  }
-  return cleaned;
+  return text.replace(/<think>[\s\S]*?<\/think>/gi, '').trim();
 }
 
 // ========================================================
@@ -163,7 +174,7 @@ async function callGroqWithRotation(prompt, imageBase64 = null) {
           }
         ],
         temperature: 0.7,
-        max_tokens: 350
+        max_tokens: 800
       });
 
       const content = response.choices[0]?.message?.content || '';
@@ -206,7 +217,7 @@ async function callNvidia(prompt, imageBase64 = null) {
       }
     ],
     temperature: 0.8,
-    max_tokens: 350
+    max_tokens: 800
   });
 
   const content = response.choices[0]?.message?.content || '';
@@ -387,6 +398,69 @@ async function sendThreadReply(replyToId, text) {
   throw new Error(`Gagal publish reply setelah retry: ${JSON.stringify(lastPublishError)}`);
 }
 
+// Membagi teks panjang menjadi beberapa bagian thread (looping) jika melebihi batas karakter Threads (~430 karakter)
+function splitTextIntoChunks(text, maxChunkLength = 430) {
+  if (!text) return [];
+  if (text.length <= maxChunkLength) return [text];
+
+  const rawChunks = [];
+  let remaining = text.trim();
+
+  while (remaining.length > 0) {
+    if (remaining.length <= maxChunkLength) {
+      rawChunks.push(remaining);
+      break;
+    }
+
+    // Cari titik potong alami: enter (\n), titik kalimat (. ), atau spasi
+    let sliceIndex = remaining.lastIndexOf('\n', maxChunkLength);
+    if (sliceIndex === -1 || sliceIndex < maxChunkLength * 0.5) {
+      sliceIndex = remaining.lastIndexOf('. ', maxChunkLength);
+      if (sliceIndex !== -1 && sliceIndex >= maxChunkLength * 0.4) {
+        sliceIndex += 1;
+      }
+    }
+    if (sliceIndex === -1 || sliceIndex < maxChunkLength * 0.4) {
+      sliceIndex = remaining.lastIndexOf(' ', maxChunkLength);
+    }
+    if (sliceIndex === -1) {
+      sliceIndex = maxChunkLength;
+    }
+
+    const chunk = remaining.substring(0, sliceIndex).trim();
+    if (chunk) rawChunks.push(chunk);
+    remaining = remaining.substring(sliceIndex).trim();
+  }
+
+  // Jika terbagi lebih dari 1 bagian, tambahkan indikator [1/N], [2/N]
+  if (rawChunks.length > 1) {
+    return rawChunks.map((c, i) => `${c}\n\n[${i + 1}/${rawChunks.length}]`);
+  }
+
+  return rawChunks;
+}
+
+// Mengirim balasan berantai (thread chain) jika teks terbagi menjadi beberapa bagian
+async function sendThreadReplyChain(targetId, text) {
+  const chunks = splitTextIntoChunks(text, 430);
+  let parentReplyId = targetId;
+  const sentIds = [];
+
+  for (let i = 0; i < chunks.length; i++) {
+    const chunkText = chunks[i];
+    if (i > 0) {
+      console.log(`[⏳] Jeda 2 detik sebelum mengirim bagian berikutnya (${i + 1}/${chunks.length})...`);
+      await sleep(2000);
+    }
+    const newReplyId = await sendThreadReply(parentReplyId, chunkText);
+    saveRepliedId(newReplyId); // tandai id balasan sendiri agar bot tidak membalas dirinya sendiri
+    sentIds.push(newReplyId);
+    parentReplyId = newReplyId; // sambungkan thread ke postingan balasan sebelumnya
+  }
+
+  return { sentIds, totalParts: chunks.length };
+}
+
 function isUserAllowed(username) {
   if (!username) return false;
   if (TARGET_USERS.trim() === '*') return true;
@@ -408,18 +482,23 @@ async function checkAndReply() {
   const now = new Date().toLocaleTimeString('id-ID');
 
   try {
-    const repliedIds = getRepliedIds();
     let foundNew = 0;
 
-    // 1. Cek balasan di thread yang diposting akun bot sendiri
+    // 1. Cek komentar di postingan akun bot sendiri
     const myThreads = await getRecentThreads();
     for (const post of myThreads) {
       const replies = await getThreadReplies(post.id);
 
       for (const reply of replies) {
-        if (repliedIds.includes(reply.id)) continue;
+        if (hasReplied(reply.id)) continue;
         if (reply.username && reply.username.toLowerCase() === CLEAN_BOT_USERNAME) continue;
         if (!isUserAllowed(reply.username)) continue;
+
+        // Jika komentar tersebut menyebut @bot, serahkan ke handler getMentions()
+        // agar konteks postingan induk dan gambar/video diproses secara lengkap tanpa duplikasi
+        if (reply.text && reply.text.toLowerCase().includes('@' + CLEAN_BOT_USERNAME)) {
+          continue;
+        }
 
         // Abaikan pesan masa lalu yang dibuat sebelum bot dinyalakan
         const replyTime = new Date(reply.timestamp).getTime();
@@ -431,18 +510,17 @@ async function checkAndReply() {
         isProcessing = true;
         try {
           foundNew++;
-          // LOG PESAN MASUK (ASCII BOX)
           logIncomingMessage({
             type: 'Komentar Postingan',
             from: reply.username,
             text: reply.text
           });
 
-          // Cek apakah postingan memiliki gambar atau thumbnail video
+          // Cek apakah komentar atau postingan memiliki gambar / video
           let imageBase64 = null;
-          const mediaUrl = extractImageUrl(post);
+          const mediaUrl = extractImageUrl(reply) || extractImageUrl(post);
           if (mediaUrl) {
-            console.log(`[📷] Mendeteksi gambar/video di postingan, memproses dengan AI Vision...`);
+            console.log(`[📷] Mendeteksi gambar/video di komentar/postingan, memproses dengan AI Vision...`);
             imageBase64 = await fetchImageAsBase64(mediaUrl);
           }
 
@@ -451,7 +529,6 @@ async function checkAndReply() {
             replyText = imageBase64 ? 'Tolong jelaskan atau baca isi gambar ini.' : 'Halo!';
           }
 
-          // Susun prompt dengan konteks postingan utama jika ada
           let fullPrompt = replyText;
           if (post.text) {
             fullPrompt = `Konteks Postingan: "${post.text}"\nKomentar dari @${reply.username}: "${replyText}"`;
@@ -460,15 +537,15 @@ async function checkAndReply() {
           // GENERASI JAWABAN (VISION / TEKS)
           const aiResult = await generateAIResponse(fullPrompt, imageBase64);
 
-          // KIRIM REPLY
-          await sendThreadReply(reply.id, aiResult.answer);
+          // KIRIM REPLY BERANTAI (LOOPING/CHUNKING)
+          const chainResult = await sendThreadReplyChain(reply.id, aiResult.answer);
           saveRepliedId(reply.id);
 
           // LOG BALASAN AI (ASCII BOX)
           logAiReply({
             provider: aiResult.provider,
             model: aiResult.model,
-            reply: aiResult.answer,
+            reply: aiResult.answer + (chainResult.totalParts > 1 ? ` (${chainResult.totalParts} bagian bersambung)` : ''),
             to: reply.username
           });
         } catch (itemErr) {
@@ -483,7 +560,7 @@ async function checkAndReply() {
     // 2. Cek mention (@username) dari pengguna lain
     const mentions = await getMentions();
     for (const mention of mentions) {
-      if (repliedIds.includes(mention.id)) continue;
+      if (hasReplied(mention.id)) continue;
       if (mention.username && mention.username.toLowerCase() === CLEAN_BOT_USERNAME) continue;
       if (!isUserAllowed(mention.username)) continue;
 
@@ -497,7 +574,6 @@ async function checkAndReply() {
       isProcessing = true;
       try {
         foundNew++;
-        // LOG PESAN MASUK (ASCII BOX)
         logIncomingMessage({
           type: 'Mention Akun',
           from: mention.username,
@@ -519,8 +595,10 @@ async function checkAndReply() {
               imageBase64 = await fetchImageAsBase64(targetMedia);
             }
           }
-        } else {
-          // Jika mention ada di postingan utama yang menyertakan foto/video
+        }
+
+        // Jika tidak ada di postingan induk, cek apakah mention langsung melampirkan media
+        if (!imageBase64) {
           const directMedia = extractImageUrl(mention);
           if (directMedia) {
             console.log(`[📷] Mendeteksi gambar/video langsung pada mention, memproses dengan AI Vision...`);
@@ -542,15 +620,15 @@ async function checkAndReply() {
         // GENERASI JAWABAN (VISION / TEKS)
         const aiResult = await generateAIResponse(fullPrompt, imageBase64);
 
-        // KIRIM REPLY
-        await sendThreadReply(mention.id, aiResult.answer);
+        // KIRIM REPLY BERANTAI (LOOPING/CHUNKING)
+        const chainResult = await sendThreadReplyChain(mention.id, aiResult.answer);
         saveRepliedId(mention.id);
 
         // LOG BALASAN AI (ASCII BOX)
         logAiReply({
           provider: aiResult.provider,
           model: aiResult.model,
-          reply: aiResult.answer,
+          reply: aiResult.answer + (chainResult.totalParts > 1 ? ` (${chainResult.totalParts} bagian bersambung)` : ''),
           to: mention.username
         });
       } catch (itemErr) {
