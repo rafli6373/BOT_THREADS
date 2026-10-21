@@ -178,9 +178,9 @@ function cleanAiResponse(text) {
 }
 
 // ========================================================
-// GENERASI RESPON AI (GROQ ROTASI & NVIDIA)
+// GENERASI RESPON AI (GROQ ROTASI & NVIDIA DENGAN VISION)
 // ========================================================
-async function callGroqWithRotation(prompt) {
+async function callGroqWithRotation(prompt, imageBase64 = null) {
   if (groqKeyPool.length === 0) {
     throw new Error('Tidak ada Groq API Key valid yang tersedia di .env!');
   }
@@ -198,6 +198,17 @@ async function callGroqWithRotation(prompt) {
         baseURL: 'https://api.groq.com/openai/v1'
       });
 
+      // Susun pesan: jika ada gambar, gunakan format multimodal Vision
+      let userContent;
+      if (imageBase64) {
+        userContent = [
+          { type: 'text', text: prompt },
+          { type: 'image_url', image_url: { url: imageBase64 } }
+        ];
+      } else {
+        userContent = prompt;
+      }
+
       const response = await groqClient.chat.completions.create({
         model: GROQ_MODEL,
         messages: [
@@ -207,17 +218,17 @@ async function callGroqWithRotation(prompt) {
           },
           {
             role: 'user',
-            content: prompt
+            content: userContent
           }
         ],
-        temperature: 0.8,
+        temperature: 0.7,
         max_tokens: 350
       });
 
       const content = response.choices[0]?.message?.content || '';
       return {
         answer: cleanAiResponse(content),
-        provider: 'Groq',
+        provider: imageBase64 ? 'Groq (Vision Multimodal)' : 'Groq',
         model: GROQ_MODEL
       };
     } catch (err) {
@@ -229,9 +240,17 @@ async function callGroqWithRotation(prompt) {
   throw lastError || new Error('Semua Groq API Keys yang dipasang gagal!');
 }
 
-async function callNvidia(prompt) {
+async function callNvidia(prompt, imageBase64 = null) {
   if (!nvidiaClient) throw new Error('NVIDIA API Key belum dikonfigurasi di .env!');
   
+  let userContent = prompt;
+  if (imageBase64) {
+    userContent = [
+      { type: 'text', text: prompt },
+      { type: 'image_url', image_url: { url: imageBase64 } }
+    ];
+  }
+
   const response = await nvidiaClient.chat.completions.create({
     model: NVIDIA_MODEL,
     messages: [
@@ -241,7 +260,7 @@ async function callNvidia(prompt) {
       },
       {
         role: 'user',
-        content: prompt
+        content: userContent
       }
     ],
     temperature: 0.8,
@@ -256,28 +275,28 @@ async function callNvidia(prompt) {
   };
 }
 
-async function generateAIResponse(prompt) {
+async function generateAIResponse(prompt, imageBase64 = null) {
   const isFallbackEnabled = ENABLE_FALLBACK === 'true';
 
   if (AI_PROVIDER.toLowerCase() === 'groq') {
     try {
-      return await callGroqWithRotation(prompt);
+      return await callGroqWithRotation(prompt, imageBase64);
     } catch (err) {
       console.warn(`[!] Seluruh key Groq gagal (${err.message})`);
       if (isFallbackEnabled && nvidiaClient) {
         console.log(`[↺] Beralih otomatis ke Fallback NVIDIA NIM...`);
-        return await callNvidia(prompt);
+        return await callNvidia(prompt, imageBase64);
       }
       throw err;
     }
   } else {
     try {
-      return await callNvidia(prompt);
+      return await callNvidia(prompt, imageBase64);
     } catch (err) {
       console.warn(`[!] NVIDIA gagal (${err.message})`);
       if (isFallbackEnabled && groqKeyPool.length > 0) {
         console.log(`[↺] Beralih otomatis ke Fallback Groq (Key Rotasi)...`);
-        return await callGroqWithRotation(prompt);
+        return await callGroqWithRotation(prompt, imageBase64);
       }
       throw err;
     }
@@ -288,7 +307,7 @@ async function generateAIResponse(prompt) {
 // THREADS GRAPH API
 // ========================================================
 async function getRecentThreads() {
-  const url = `https://graph.threads.net/v1.0/me/threads?fields=id,text,timestamp&limit=5&access_token=${CLEAN_TOKEN}`;
+  const url = `https://graph.threads.net/v1.0/me/threads?fields=id,text,timestamp,media_type,media_url,thumbnail_url&limit=5&access_token=${CLEAN_TOKEN}`;
   const res = await fetch(url);
   const data = await res.json();
   if (!res.ok) {
@@ -298,7 +317,7 @@ async function getRecentThreads() {
 }
 
 async function getThreadReplies(threadId) {
-  const url = `https://graph.threads.net/v1.0/${threadId}/conversation?fields=id,text,username,timestamp&access_token=${CLEAN_TOKEN}`;
+  const url = `https://graph.threads.net/v1.0/${threadId}/conversation?fields=id,text,username,timestamp,media_type,media_url,thumbnail_url&access_token=${CLEAN_TOKEN}`;
   const res = await fetch(url);
   const data = await res.json();
   if (!res.ok) return [];
@@ -306,22 +325,38 @@ async function getThreadReplies(threadId) {
 }
 
 async function getMentions() {
-  const url = `https://graph.threads.net/v1.0/me/mentions?fields=id,text,username,timestamp,replied_to,root_post&limit=10&access_token=${CLEAN_TOKEN}`;
+  const url = `https://graph.threads.net/v1.0/me/mentions?fields=id,text,username,timestamp,replied_to,root_post,media_type,media_url,thumbnail_url&limit=10&access_token=${CLEAN_TOKEN}`;
   const res = await fetch(url);
   const data = await res.json();
   if (!res.ok) return [];
   return data.data || [];
 }
 
-// Mengambil teks dari postingan induk / video yang sedang dikomentari
-async function getPostText(postId) {
-  if (!postId) return '';
+// Mengambil detail lengkap postingan induk (teks + gambar/video thumbnail)
+async function getPostDetail(postId) {
+  if (!postId) return null;
   try {
-    const res = await fetch(`https://graph.threads.net/v1.0/${postId}?fields=text,username&access_token=${CLEAN_TOKEN}`);
+    const res = await fetch(`https://graph.threads.net/v1.0/${postId}?fields=id,text,username,media_type,media_url,thumbnail_url&access_token=${CLEAN_TOKEN}`);
     const data = await res.json();
-    return data.text || '';
+    return data;
   } catch {
-    return '';
+    return null;
+  }
+}
+
+// Download gambar dan ubah ke format Base64 Data URI untuk dianalisis oleh AI Vision
+async function fetchImageAsBase64(imageUrl) {
+  if (!imageUrl) return null;
+  try {
+    const res = await fetch(imageUrl);
+    if (!res.ok) return null;
+    const contentType = res.headers.get('content-type') || 'image/jpeg';
+    const buffer = await res.arrayBuffer();
+    const base64 = Buffer.from(buffer).toString('base64');
+    return `data:${contentType};base64,${base64}`;
+  } catch (err) {
+    console.warn('[!] Gagal mengunduh gambar:', err.message);
+    return null;
   }
 }
 
@@ -444,8 +479,16 @@ async function checkAndReply() {
           fullPrompt = `Konteks Postingan: "${post.text}"\nKomentar dari @${reply.username}: "${reply.text}"`;
         }
 
-        // GENERASI JAWABAN
-        const aiResult = await generateAIResponse(fullPrompt);
+        // Cek apakah postingan memiliki gambar atau thumbnail video
+        let imageBase64 = null;
+        const mediaUrl = post.media_url || post.thumbnail_url;
+        if (mediaUrl) {
+          console.log(`[📷] Mendeteksi gambar/video di postingan, memproses dengan AI Vision...`);
+          imageBase64 = await fetchImageAsBase64(mediaUrl);
+        }
+
+        // GENERASI JAWABAN (VISION / TEKS)
+        const aiResult = await generateAIResponse(fullPrompt, imageBase64);
 
         // KIRIM REPLY
         await sendThreadReply(reply.id, aiResult.answer);
@@ -488,11 +531,28 @@ async function checkAndReply() {
       // Hilangkan tag @username dari prompt
       const cleanPrompt = mention.text.replace(/@\w+/g, '').trim() || mention.text;
 
-      // Ambil teks postingan induk / video agar AI paham konteks yang sedang dibahas
+      // Ambil teks & gambar dari postingan induk / video agar AI paham konteks visual
       let contextText = '';
+      let imageBase64 = null;
       const parentId = mention.replied_to?.id || mention.root_post?.id;
+
       if (parentId && parentId !== mention.id) {
-        contextText = await getPostText(parentId);
+        const parentDetail = await getPostDetail(parentId);
+        if (parentDetail) {
+          contextText = parentDetail.text || '';
+          const targetMedia = parentDetail.media_url || parentDetail.thumbnail_url;
+          if (targetMedia) {
+            console.log(`[📷] Mendeteksi gambar/video pada postingan induk, memproses dengan AI Vision...`);
+            imageBase64 = await fetchImageAsBase64(targetMedia);
+          }
+        }
+      } else {
+        // Jika mention ada di postingan utama yang menyertakan foto/video
+        const directMedia = mention.media_url || mention.thumbnail_url;
+        if (directMedia) {
+          console.log(`[📷] Mendeteksi gambar/video langsung pada mention, memproses dengan AI Vision...`);
+          imageBase64 = await fetchImageAsBase64(directMedia);
+        }
       }
 
       let fullPrompt = cleanPrompt;
@@ -500,7 +560,8 @@ async function checkAndReply() {
         fullPrompt = `Konteks Postingan/Video yang dibahas: "${contextText}"\nPertanyaan/Komentar dari @${mention.username}: "${cleanPrompt}"`;
       }
 
-      const aiResult = await generateAIResponse(fullPrompt);
+      // GENERASI JAWABAN (VISION / TEKS)
+      const aiResult = await generateAIResponse(fullPrompt, imageBase64);
 
       // KIRIM REPLY
       await sendThreadReply(mention.id, aiResult.answer);
