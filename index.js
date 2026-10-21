@@ -31,6 +31,9 @@ PENTING (Batasan Platform Threads):
 const CLEAN_TOKEN = (THREADS_ACCESS_TOKEN || '').replace(/["'\s]/g, '');
 const CLEAN_BOT_USERNAME = (BOT_USERNAME || '').replace(/[@"'\s]/g, '').toLowerCase();
 
+// Waktu bot dinyalakan (untuk menyaring pesan lama)
+const BOT_START_TIME = Date.now();
+
 const DB_FILE = './replied_ids.json';
 
 // Kumpulkan dan parsing semua Groq API Keys
@@ -419,6 +422,13 @@ async function checkAndReply() {
         if (reply.username && reply.username.toLowerCase() === CLEAN_BOT_USERNAME) continue;
         if (!isUserAllowed(reply.username)) continue;
 
+        // Abaikan pesan masa lalu yang dibuat sebelum bot dinyalakan
+        const replyTime = new Date(reply.timestamp).getTime();
+        if (replyTime < BOT_START_TIME - 30000) {
+          saveRepliedId(reply.id);
+          continue;
+        }
+
         isProcessing = true;
         foundNew++;
         // LOG PESAN MASUK (ASCII BOX)
@@ -458,6 +468,13 @@ async function checkAndReply() {
       if (repliedIds.includes(mention.id)) continue;
       if (mention.username && mention.username.toLowerCase() === CLEAN_BOT_USERNAME) continue;
       if (!isUserAllowed(mention.username)) continue;
+
+      // Abaikan pesan masa lalu yang dibuat sebelum bot dinyalakan
+      const mentionTime = new Date(mention.timestamp).getTime();
+      if (mentionTime < BOT_START_TIME - 30000) {
+        saveRepliedId(mention.id);
+        continue;
+      }
 
       isProcessing = true;
       foundNew++;
@@ -524,6 +541,22 @@ setInterval(() => {
 
 async function start() {
   await playAnimatedBanner();
+
+  // Sinkronisasi otomatis saat bot baru diupload/dinyalakan
+  // Ini menandai semua mention & komentar lama agar bot TIDAK membalas pesan masa lalu
+  console.log('[*] Menyelaraskan pesan lama Threads agar tidak terjadi spam...');
+  try {
+    const [mentions, threads] = await Promise.all([getMentions(), getRecentThreads()]);
+    for (const m of mentions) saveRepliedId(m.id);
+    for (const t of threads) {
+      const replies = await getThreadReplies(t.id);
+      for (const r of replies) saveRepliedId(r.id);
+    }
+    console.log('[✓] Sinkronisasi selesai. Bot hanya merespon pesan BARU mulai sekarang!\n');
+  } catch (e) {
+    console.warn('[!] Catatan sinkronisasi awal:', e.message);
+  }
+
   checkAndReply();
   setInterval(checkAndReply, parseInt(CHECK_INTERVAL_SECONDS, 10) * 1000);
 }
