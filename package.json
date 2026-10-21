@@ -1,0 +1,14 @@
+{
+  "name": "threads-ai-bot",
+  "version": "1.0.0",
+  "description": "AI Threads Bot with Groq and NVIDIA NIM Support",
+  "type": "module",
+  "main": "index.js",
+  "scripts": {
+    "start": "node index.js"
+  },
+  "dependencies": {
+    "dotenv": "^16.4.7",
+    "openai": "^4.85.4"
+  }
+}
