@@ -184,8 +184,9 @@ async function callGroqWithRotation(prompt, imageBase64 = null) {
 async function callNvidia(prompt, imageBase64 = null) {
   if (!nvidiaClient) throw new Error('NVIDIA API Key belum dikonfigurasi di .env!');
   
+  // Model NVIDIA Nemotron tidak mendukung image_url (Vision), jadi kirim teks saja agar tidak error
   let userContent = prompt;
-  if (imageBase64) {
+  if (imageBase64 && NVIDIA_MODEL.toLowerCase().includes('vision')) {
     userContent = [
       { type: 'text', text: prompt },
       { type: 'image_url', image_url: { url: imageBase64 } }
@@ -223,7 +224,14 @@ async function generateAIResponse(prompt, imageBase64 = null) {
     try {
       return await callGroqWithRotation(prompt, imageBase64);
     } catch (err) {
-      console.warn(`[!] Seluruh key Groq gagal (${err.message})`);
+      console.warn(`[!] Groq Vision/Teks gagal (${err.message})`);
+      // Jika gagal saat membawa gambar, coba sekali lagi dalam mode teks murni
+      if (imageBase64) {
+        try {
+          console.log(`[↺] Mencoba ulang Groq dengan mode teks murni...`);
+          return await callGroqWithRotation(prompt, null);
+        } catch {}
+      }
       if (isFallbackEnabled && nvidiaClient) {
         console.log(`[↺] Beralih otomatis ke Fallback NVIDIA NIM...`);
         return await callNvidia(prompt, imageBase64);
@@ -285,6 +293,15 @@ async function getPostDetail(postId) {
   }
 }
 
+// Menentukan URL gambar yang valid (menghindari mendownload video mentah jika tipe VIDEO)
+function extractImageUrl(mediaObj) {
+  if (!mediaObj) return null;
+  if (mediaObj.media_type === 'VIDEO') {
+    return mediaObj.thumbnail_url || null;
+  }
+  return mediaObj.media_url || mediaObj.thumbnail_url || null;
+}
+
 // Download gambar dan ubah ke format Base64 Data URI untuk dianalisis oleh AI Vision
 async function fetchImageAsBase64(imageUrl) {
   if (!imageUrl) return null;
@@ -292,6 +309,10 @@ async function fetchImageAsBase64(imageUrl) {
     const res = await fetch(imageUrl);
     if (!res.ok) return null;
     const contentType = res.headers.get('content-type') || 'image/jpeg';
+    if (!contentType.startsWith('image/')) {
+      console.warn(`[!] URL media bukan gambar (${contentType}), diabaikan.`);
+      return null;
+    }
     const buffer = await res.arrayBuffer();
     const base64 = Buffer.from(buffer).toString('base64');
     return `data:${contentType};base64,${base64}`;
@@ -376,6 +397,8 @@ function isUserAllowed(username) {
 // ========================================================
 // LOOP UTAMA POLLING
 // ========================================================
+let isProcessing = false;
+
 async function checkAndReply() {
   if (!CLEAN_TOKEN || CLEAN_TOKEN.includes('masukkan_')) {
     console.warn('[!] THREADS_ACCESS_TOKEN belum diisi di file .env');
@@ -406,43 +429,54 @@ async function checkAndReply() {
         }
 
         isProcessing = true;
-        foundNew++;
-        // LOG PESAN MASUK (ASCII BOX)
-        logIncomingMessage({
-          type: 'Komentar Postingan',
-          from: reply.username,
-          text: reply.text
-        });
+        try {
+          foundNew++;
+          // LOG PESAN MASUK (ASCII BOX)
+          logIncomingMessage({
+            type: 'Komentar Postingan',
+            from: reply.username,
+            text: reply.text
+          });
 
-        // Susun prompt dengan konteks postingan utama jika ada
-        let fullPrompt = reply.text;
-        if (post.text) {
-          fullPrompt = `Konteks Postingan: "${post.text}"\nKomentar dari @${reply.username}: "${reply.text}"`;
+          // Cek apakah postingan memiliki gambar atau thumbnail video
+          let imageBase64 = null;
+          const mediaUrl = extractImageUrl(post);
+          if (mediaUrl) {
+            console.log(`[📷] Mendeteksi gambar/video di postingan, memproses dengan AI Vision...`);
+            imageBase64 = await fetchImageAsBase64(mediaUrl);
+          }
+
+          let replyText = (reply.text || '').replace(/@\w+/g, '').trim();
+          if (!replyText) {
+            replyText = imageBase64 ? 'Tolong jelaskan atau baca isi gambar ini.' : 'Halo!';
+          }
+
+          // Susun prompt dengan konteks postingan utama jika ada
+          let fullPrompt = replyText;
+          if (post.text) {
+            fullPrompt = `Konteks Postingan: "${post.text}"\nKomentar dari @${reply.username}: "${replyText}"`;
+          }
+
+          // GENERASI JAWABAN (VISION / TEKS)
+          const aiResult = await generateAIResponse(fullPrompt, imageBase64);
+
+          // KIRIM REPLY
+          await sendThreadReply(reply.id, aiResult.answer);
+          saveRepliedId(reply.id);
+
+          // LOG BALASAN AI (ASCII BOX)
+          logAiReply({
+            provider: aiResult.provider,
+            model: aiResult.model,
+            reply: aiResult.answer,
+            to: reply.username
+          });
+        } catch (itemErr) {
+          console.error(`[!] Gagal memproses komentar dari @${reply.username}:`, itemErr.message);
+          saveRepliedId(reply.id);
+        } finally {
+          isProcessing = false;
         }
-
-        // Cek apakah postingan memiliki gambar atau thumbnail video
-        let imageBase64 = null;
-        const mediaUrl = post.media_url || post.thumbnail_url;
-        if (mediaUrl) {
-          console.log(`[📷] Mendeteksi gambar/video di postingan, memproses dengan AI Vision...`);
-          imageBase64 = await fetchImageAsBase64(mediaUrl);
-        }
-
-        // GENERASI JAWABAN (VISION / TEKS)
-        const aiResult = await generateAIResponse(fullPrompt, imageBase64);
-
-        // KIRIM REPLY
-        await sendThreadReply(reply.id, aiResult.answer);
-        saveRepliedId(reply.id);
-
-        // LOG BALASAN AI (ASCII BOX)
-        logAiReply({
-          provider: aiResult.provider,
-          model: aiResult.model,
-          reply: aiResult.answer,
-          to: reply.username
-        });
-        isProcessing = false;
       }
     }
 
@@ -461,61 +495,70 @@ async function checkAndReply() {
       }
 
       isProcessing = true;
-      foundNew++;
-      // LOG PESAN MASUK (ASCII BOX)
-      logIncomingMessage({
-        type: 'Mention Akun',
-        from: mention.username,
-        text: mention.text
-      });
+      try {
+        foundNew++;
+        // LOG PESAN MASUK (ASCII BOX)
+        logIncomingMessage({
+          type: 'Mention Akun',
+          from: mention.username,
+          text: mention.text
+        });
 
-      // Hilangkan tag @username dari prompt
-      const cleanPrompt = mention.text.replace(/@\w+/g, '').trim() || mention.text;
+        // Ambil teks & gambar dari postingan induk / video agar AI paham konteks visual
+        let contextText = '';
+        let imageBase64 = null;
+        const parentId = mention.replied_to?.id || mention.root_post?.id;
 
-      // Ambil teks & gambar dari postingan induk / video agar AI paham konteks visual
-      let contextText = '';
-      let imageBase64 = null;
-      const parentId = mention.replied_to?.id || mention.root_post?.id;
-
-      if (parentId && parentId !== mention.id) {
-        const parentDetail = await getPostDetail(parentId);
-        if (parentDetail) {
-          contextText = parentDetail.text || '';
-          const targetMedia = parentDetail.media_url || parentDetail.thumbnail_url;
-          if (targetMedia) {
-            console.log(`[📷] Mendeteksi gambar/video pada postingan induk, memproses dengan AI Vision...`);
-            imageBase64 = await fetchImageAsBase64(targetMedia);
+        if (parentId && parentId !== mention.id) {
+          const parentDetail = await getPostDetail(parentId);
+          if (parentDetail) {
+            contextText = parentDetail.text || '';
+            const targetMedia = extractImageUrl(parentDetail);
+            if (targetMedia) {
+              console.log(`[📷] Mendeteksi gambar/video pada postingan induk, memproses dengan AI Vision...`);
+              imageBase64 = await fetchImageAsBase64(targetMedia);
+            }
+          }
+        } else {
+          // Jika mention ada di postingan utama yang menyertakan foto/video
+          const directMedia = extractImageUrl(mention);
+          if (directMedia) {
+            console.log(`[📷] Mendeteksi gambar/video langsung pada mention, memproses dengan AI Vision...`);
+            imageBase64 = await fetchImageAsBase64(directMedia);
           }
         }
-      } else {
-        // Jika mention ada di postingan utama yang menyertakan foto/video
-        const directMedia = mention.media_url || mention.thumbnail_url;
-        if (directMedia) {
-          console.log(`[📷] Mendeteksi gambar/video langsung pada mention, memproses dengan AI Vision...`);
-          imageBase64 = await fetchImageAsBase64(directMedia);
+
+        // Hilangkan tag @username dari prompt
+        let cleanPrompt = (mention.text || '').replace(/@\w+/g, '').trim();
+        if (!cleanPrompt) {
+          cleanPrompt = imageBase64 ? 'Tolong baca teks pada gambar ini atau jelaskan isinya secara ringkas.' : 'Halo! Ada yang bisa saya bantu?';
         }
+
+        let fullPrompt = cleanPrompt;
+        if (contextText) {
+          fullPrompt = `Konteks Postingan/Video yang dibahas: "${contextText}"\nPertanyaan/Komentar dari @${mention.username}: "${cleanPrompt}"`;
+        }
+
+        // GENERASI JAWABAN (VISION / TEKS)
+        const aiResult = await generateAIResponse(fullPrompt, imageBase64);
+
+        // KIRIM REPLY
+        await sendThreadReply(mention.id, aiResult.answer);
+        saveRepliedId(mention.id);
+
+        // LOG BALASAN AI (ASCII BOX)
+        logAiReply({
+          provider: aiResult.provider,
+          model: aiResult.model,
+          reply: aiResult.answer,
+          to: mention.username
+        });
+      } catch (itemErr) {
+        console.error(`[!] Gagal memproses mention dari @${mention.username}:`, itemErr.message);
+        saveRepliedId(mention.id);
+      } finally {
+        isProcessing = false;
       }
-
-      let fullPrompt = cleanPrompt;
-      if (contextText) {
-        fullPrompt = `Konteks Postingan/Video yang dibahas: "${contextText}"\nPertanyaan/Komentar dari @${mention.username}: "${cleanPrompt}"`;
-      }
-
-      // GENERASI JAWABAN (VISION / TEKS)
-      const aiResult = await generateAIResponse(fullPrompt, imageBase64);
-
-      // KIRIM REPLY
-      await sendThreadReply(mention.id, aiResult.answer);
-      saveRepliedId(mention.id);
-
-      // LOG BALASAN AI (ASCII BOX)
-      logAiReply({
-        provider: aiResult.provider,
-        model: aiResult.model,
-        reply: aiResult.answer,
-        to: mention.username
-      });
-      isProcessing = false;
     }
 
   } catch (err) {
