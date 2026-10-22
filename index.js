@@ -163,18 +163,22 @@ async function callMetaAI(prompt, media = null) {
 async function callNvidia(prompt, media = null) {
   if (!nvidiaClient) throw new Error('NVIDIA API Key belum dikonfigurasi di .env!');
   
+  let targetModel = NVIDIA_MODEL;
   let userContent = prompt;
   const imageBase64 = media?.base64 || (typeof media === 'string' && media.startsWith('data:') ? media : null);
-  // Model NVIDIA Nemotron adalah model teks murni, hanya sertakan image_url jika model mendukung vision
-  if (imageBase64 && media?.mimeType?.startsWith('image/') && NVIDIA_MODEL.toLowerCase().includes('vision')) {
+
+  // Jika terdapat lampiran gambar/OCR, otomatis alihkan ke model Vision (Meta Llama 3.2 Vision)
+  if (imageBase64 && (media?.mimeType?.startsWith('image/') || typeof media === 'string')) {
+    targetModel = 'meta/llama-3.2-11b-vision-instruct';
     userContent = [
       { type: 'text', text: prompt },
       { type: 'image_url', image_url: { url: imageBase64 } }
     ];
+    console.log(`[👁️] Memproses Vision/OCR menggunakan model ${targetModel}...`);
   }
 
   const response = await nvidiaClient.chat.completions.create({
-    model: NVIDIA_MODEL,
+    model: targetModel,
     messages: [
       {
         role: 'system',
@@ -192,8 +196,8 @@ async function callNvidia(prompt, media = null) {
   const content = response.choices[0]?.message?.content || '';
   return {
     answer: cleanAiResponse(content),
-    provider: 'NVIDIA',
-    model: NVIDIA_MODEL
+    provider: 'NVIDIA NIM',
+    model: targetModel
   };
 }
 
