@@ -97,14 +97,14 @@ class MetaAiPuppeteer {
       await this.page.setCookie(...cookies);
     }
 
-    await this.page.goto('https://www.meta.ai/', { waitUntil: 'networkidle2', timeout: 35000 });
+    await this.page.goto('https://www.meta.ai/', { waitUntil: 'domcontentloaded', timeout: 35000 });
     return this.page;
   }
 
   /**
    * Mengirim pertanyaan ke Meta AI dan mengambil respons teksnya
    * @param {string} prompt - Pertanyaan pengguna
-   * @param {object} options - Opsi lampiran { imageBuffer, mimeType }
+   * @param {object} options - Opsi lampiran { fileBuffer, mimeType, filePath }
    */
   async ask(prompt, options = {}) {
     // Antrian jika browser sedang memproses chat sebelumnya
@@ -118,90 +118,120 @@ class MetaAiPuppeteer {
     try {
       const page = await this.getPage();
 
+      // Buka percakapan baru yang bersih untuk setiap permintaan
+      try {
+        await page.goto('https://www.meta.ai/', { waitUntil: 'domcontentloaded', timeout: 30000 });
+      } catch (navErr) {
+        // Jika navigasi timeout ringan, lanjutkan jika halaman sudah siap
+      }
+
       // Tunggu input textbox tersedia
       const inputSelector = 'div[role="textbox"]';
       await page.waitForSelector(inputSelector, { timeout: 15000 });
 
-      // Jika ada lampiran gambar/file
-      if (options.fileBuffer) {
+      // Jika ada lampiran gambar, video, atau dokumen (OCR Multimodal)
+      if (options.fileBuffer || options.filePath) {
         try {
-          const ext = options.mimeType?.includes('png') ? '.png' : '.jpg';
-          tempFilePath = path.join(os.tmpdir(), `meta_upload_${Date.now()}${ext}`);
-          fs.writeFileSync(tempFilePath, options.fileBuffer);
+          if (options.filePath && fs.existsSync(options.filePath)) {
+            tempFilePath = options.filePath;
+          } else if (options.fileBuffer) {
+            let ext = '.jpg';
+            const mime = (options.mimeType || '').toLowerCase();
+            if (mime.includes('png')) ext = '.png';
+            else if (mime.includes('webp')) ext = '.webp';
+            else if (mime.includes('mp4') || mime.includes('video')) ext = '.mp4';
+            else if (mime.includes('pdf')) ext = '.pdf';
+            else if (mime.includes('word') || mime.includes('docx')) ext = '.docx';
+            else if (mime.includes('excel') || mime.includes('spreadsheet') || mime.includes('sheet') || mime.includes('xlsx')) ext = '.xlsx';
+            else if (mime.includes('text') || mime.includes('csv')) ext = '.txt';
+
+            tempFilePath = path.join(os.tmpdir(), `meta_upload_${Date.now()}${ext}`);
+            fs.writeFileSync(tempFilePath, options.fileBuffer);
+          }
 
           const fileInput = await page.$('input[type="file"]');
-          if (fileInput) {
-            console.log('[📷] Mengunggah lampiran gambar ke Meta AI...');
+          if (fileInput && tempFilePath) {
+            console.log(`[📎] Mengunggah lampiran (${path.extname(tempFilePath)}) ke Meta AI untuk OCR/Vision...`);
             await fileInput.uploadFile(tempFilePath);
-            await new Promise(r => setTimeout(r, 2000)); // Tunggu upload selesai
+            // Beri jeda agar file selesai diunggah dan preview muncul di kotak input
+            await new Promise(r => setTimeout(r, 3000));
           }
         } catch (uploadErr) {
           console.warn('[!] Gagal mengunggah file ke Meta AI:', uploadErr.message);
         }
       }
 
-      // Hitung jumlah pesan bot sebelumnya di halaman untuk mendeteksi respons baru
-      const initialCount = await page.evaluate(() => {
-        return document.querySelectorAll('div[dir="auto"], p, div.markdown').length;
+      // Klik dan ketik prompt ke kotak chat
+      await page.click(inputSelector);
+      await page.keyboard.type(prompt, { delay: 10 });
+
+      // Kirim pesan: klik tombol Send atau tekan Enter
+      const sendClicked = await page.evaluate(() => {
+        const sendBtn = document.querySelector('button[aria-label="Send"]');
+        if (sendBtn && !sendBtn.disabled) {
+          sendBtn.click();
+          return true;
+        }
+        return false;
       });
 
-      // Ketik prompt ke kotak chat
-      await page.click(inputSelector);
-      await page.keyboard.type(prompt, { delay: 15 });
+      if (!sendClicked) {
+        await page.keyboard.press('Enter');
+      }
 
-      // Tekan tombol Enter untuk mengirim
-      await page.keyboard.press('Enter');
-
-      // Tunggu hingga respons mulai muncul dan selesai streaming (maks 25 detik)
-      let answerText = '';
+      // Pantau proses streaming respons hingga selesai
+      let started = false;
+      let rawAnswer = '';
       const startTime = Date.now();
+      const MAX_WAIT_MS = 40000;
 
-      while (Date.now() - startTime < 25000) {
-        await new Promise(r => setTimeout(r, 2000));
+      while (Date.now() - startTime < MAX_WAIT_MS) {
+        await new Promise(r => setTimeout(r, 1000));
 
-        const latestState = await page.evaluate((initCount) => {
-          const elements = Array.from(document.querySelectorAll('div[dir="auto"], p, div.markdown'));
-          const currentCount = elements.length;
+        const state = await page.evaluate(() => {
+          const isStreaming = !!document.querySelector('button[aria-label="Stop"]');
+          const articles = Array.from(document.querySelectorAll('div[role="article"]'));
+          const lastArticle = articles[articles.length - 1];
+          const lastText = lastArticle ? lastArticle.innerText.trim() : '';
 
-          // Ambil elemen yang memiliki teks signifikan setelah prompt dikirim
-          const valid = elements
-            .map(el => el.innerText?.trim())
-            .filter(t => t && t.length > 20 && !t.includes('Tanya Meta AI') && !t.includes('Ask Meta AI'));
+          return { isStreaming, articleCount: articles.length, lastText };
+        });
 
-          const lastText = valid[valid.length - 1] || '';
+        if (state.isStreaming) {
+          started = true;
+        }
 
-          // Cek apakah tombol stop generating masih ada (sedang mengetik)
-          const isStreaming = !!document.querySelector('button[aria-label*="Stop"], button[aria-label*="Hentikan"]');
-
-          return { lastText, isStreaming, currentCount };
-        }, initialCount);
-
-        if (latestState.lastText && !latestState.isStreaming && latestState.currentCount > initialCount) {
-          // Tunggu 1.5 detik lagi untuk memastikan streaming selesai 100%
-          await new Promise(r => setTimeout(r, 1500));
-          const finalText = await page.evaluate(() => {
-            const elements = Array.from(document.querySelectorAll('div[dir="auto"], p, div.markdown'));
-            const valid = elements
-              .map(el => el.innerText?.trim())
-              .filter(t => t && t.length > 20 && !t.includes('Tanya Meta AI') && !t.includes('Ask Meta AI'));
-            return valid[valid.length - 1] || '';
+        // Jika streaming sudah dimulai dan tombol Stop sudah hilang, berarti AI sudah selesai
+        if (started && !state.isStreaming && state.articleCount >= 2 && state.lastText) {
+          // Beri jeda 1 detik untuk kestabilan DOM akhir
+          await new Promise(r => setTimeout(r, 1000));
+          rawAnswer = await page.evaluate(() => {
+            const articles = Array.from(document.querySelectorAll('div[role="article"]'));
+            const lastArticle = articles[articles.length - 1];
+            return lastArticle ? lastArticle.innerText.trim() : '';
           });
-          answerText = finalText;
           break;
         }
       }
 
-      if (!answerText) {
+      if (!rawAnswer) {
         throw new Error('Timeout menunggu jawaban dari Meta AI.');
       }
 
+      // Bersihkan teks jawaban dari prefix "Show thinking", "Hide thinking", dan tombol aksi
+      let cleanAnswer = rawAnswer
+        .replace(/^(Show|Hide)\s*thinking\s*/i, '')
+        .replace(/\n*(Copy response|Share|Like this response|Dislike this response)[\s\S]*$/i, '')
+        .trim();
+
       return {
-        answer: answerText,
+        answer: cleanAnswer,
         provider: 'Meta AI (Web Scraper)'
       };
 
     } finally {
-      if (tempFilePath && fs.existsSync(tempFilePath)) {
+      // Hapus file sementara jika dibuat dari buffer
+      if (tempFilePath && !options.filePath && fs.existsSync(tempFilePath)) {
         try { fs.unlinkSync(tempFilePath); } catch {}
       }
       this.isBusy = false;

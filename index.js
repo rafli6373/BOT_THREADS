@@ -136,34 +136,37 @@ function getMetaAIClient() {
   return metaAiInstance;
 }
 
-async function callMetaAI(prompt, imageBase64 = null) {
+async function callMetaAI(prompt, media = null) {
   const client = getMetaAIClient();
 
   let options = {};
-  if (imageBase64) {
-    const base64Data = imageBase64.replace(/^data:[^;]+;base64,/, '');
-    const mimeMatch = imageBase64.match(/^data:([^;]+);base64,/);
-    const mimeType = mimeMatch ? mimeMatch[1] : 'image/jpeg';
-    const buffer = Buffer.from(base64Data, 'base64');
-
-    options.fileBuffer = buffer;
-    options.mimeType = mimeType;
+  if (media) {
+    if (media.buffer || media.fileBuffer) {
+      options.fileBuffer = media.buffer || media.fileBuffer;
+      options.mimeType = media.mimeType || 'image/jpeg';
+    } else if (typeof media === 'string' && media.startsWith('data:')) {
+      const base64Data = media.replace(/^data:[^;]+;base64,/, '');
+      const mimeMatch = media.match(/^data:([^;]+);base64,/);
+      options.fileBuffer = Buffer.from(base64Data, 'base64');
+      options.mimeType = mimeMatch ? mimeMatch[1] : 'image/jpeg';
+    }
   }
 
   const result = await client.ask(prompt, options);
   return {
     answer: cleanAiResponse(result.answer),
     provider: 'Meta AI',
-    model: 'Web Scraper'
+    model: 'Web Scraper (Multimodal OCR)'
   };
 }
 
-async function callNvidia(prompt, imageBase64 = null) {
+async function callNvidia(prompt, media = null) {
   if (!nvidiaClient) throw new Error('NVIDIA API Key belum dikonfigurasi di .env!');
   
-  // Model NVIDIA Nemotron tidak mendukung image_url (Vision), jadi kirim teks saja agar tidak error
   let userContent = prompt;
-  if (imageBase64 && NVIDIA_MODEL.toLowerCase().includes('vision')) {
+  const imageBase64 = media?.base64 || (typeof media === 'string' && media.startsWith('data:') ? media : null);
+  // Model NVIDIA Nemotron adalah model teks murni, hanya sertakan image_url jika model mendukung vision
+  if (imageBase64 && media?.mimeType?.startsWith('image/') && NVIDIA_MODEL.toLowerCase().includes('vision')) {
     userContent = [
       { type: 'text', text: prompt },
       { type: 'image_url', image_url: { url: imageBase64 } }
@@ -194,28 +197,28 @@ async function callNvidia(prompt, imageBase64 = null) {
   };
 }
 
-async function generateAIResponse(prompt, imageBase64 = null) {
+async function generateAIResponse(prompt, media = null) {
   const isFallbackEnabled = ENABLE_FALLBACK === 'true';
 
   if (AI_PROVIDER.toLowerCase() === 'meta-ai' || AI_PROVIDER.toLowerCase() === 'meta') {
     try {
-      return await callMetaAI(prompt, imageBase64);
+      return await callMetaAI(prompt, media);
     } catch (err) {
       console.warn(`[!] Meta AI gagal (${err.message})`);
       if (isFallbackEnabled && nvidiaClient) {
         console.log(`[↺] Beralih otomatis ke Fallback NVIDIA NIM...`);
-        return await callNvidia(prompt, imageBase64);
+        return await callNvidia(prompt, media);
       }
       throw err;
     }
   } else {
     try {
-      return await callNvidia(prompt, imageBase64);
+      return await callNvidia(prompt, media);
     } catch (err) {
       console.warn(`[!] NVIDIA gagal (${err.message})`);
       if (isFallbackEnabled) {
         console.log(`[↺] Beralih otomatis ke Fallback Meta AI...`);
-        return await callMetaAI(prompt, imageBase64);
+        return await callMetaAI(prompt, media);
       }
       throw err;
     }
@@ -263,33 +266,87 @@ async function getPostDetail(postId) {
   }
 }
 
-// Menentukan URL gambar yang valid (menghindari mendownload video mentah jika tipe VIDEO)
-function extractImageUrl(mediaObj) {
-  if (!mediaObj) return null;
-  if (mediaObj.media_type === 'VIDEO') {
-    return mediaObj.thumbnail_url || null;
-  }
-  return mediaObj.media_url || mediaObj.thumbnail_url || null;
-}
+// ========================================================
+// MEDIA ATTACHMENT & OCR FETCHER (GAMBAR, VIDEO, DOKUMEN)
+// ========================================================
 
-// Download gambar dan ubah ke format Base64 Data URI untuk dianalisis oleh AI Vision
-async function fetchImageAsBase64(imageUrl) {
-  if (!imageUrl) return null;
+// Download media (gambar, video, dokumen) dari URL dan siapkan buffer & base64
+async function fetchMediaAttachment(url) {
+  if (!url) return null;
   try {
-    const res = await fetch(imageUrl);
+    const res = await fetch(url, {
+      headers: {
+        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'
+      }
+    });
     if (!res.ok) return null;
-    const contentType = res.headers.get('content-type') || 'image/jpeg';
-    if (!contentType.startsWith('image/')) {
-      console.warn(`[!] URL media bukan gambar (${contentType}), diabaikan.`);
+    const contentType = res.headers.get('content-type') || 'application/octet-stream';
+    const arrayBuf = await res.arrayBuffer();
+    const buffer = Buffer.from(arrayBuf);
+
+    // Batasi file maks 25MB agar hemat memori & cepat diproses
+    if (buffer.length > 25 * 1024 * 1024) {
+      console.warn(`[!] Ukuran media melebihi 25MB (${(buffer.length / 1024 / 1024).toFixed(1)}MB), diabaikan.`);
       return null;
     }
-    const buffer = await res.arrayBuffer();
-    const base64 = Buffer.from(buffer).toString('base64');
-    return `data:${contentType};base64,${base64}`;
+
+    const base64 = `data:${contentType};base64,${buffer.toString('base64')}`;
+    return {
+      buffer,
+      mimeType: contentType,
+      base64,
+      size: buffer.length
+    };
   } catch (err) {
-    console.warn('[!] Gagal mengunduh gambar:', err.message);
+    console.warn('[!] Gagal mengunduh lampiran media/dokumen:', err.message);
     return null;
   }
+}
+
+// Mendeteksi dan mengunduh lampiran dari objek Threads (Gambar, Video, atau Link Dokumen)
+async function detectMediaAttachment(targetObj, relatedText = '') {
+  if (!targetObj) return null;
+
+  // 1. Cek apakah ada link dokumen di dalam teks (PDF, DOCX, XLSX, TXT, CSV)
+  const combinedText = `${targetObj.text || ''} ${relatedText || ''}`;
+  const docUrlMatch = combinedText.match(/https?:\/\/[^\s]+?\.(pdf|docx|xlsx|txt|csv)(\?[^\s]*)?/i);
+  if (docUrlMatch) {
+    const docUrl = docUrlMatch[0].replace(/[),.]+$/, '');
+    console.log(`[📄] Mendeteksi link dokumen di dalam teks: ${docUrl}`);
+    const docMedia = await fetchMediaAttachment(docUrl);
+    if (docMedia) return docMedia;
+  }
+
+  // 2. Cek apakah ada media video (VIDEO)
+  if (targetObj.media_type === 'VIDEO') {
+    if (targetObj.media_url) {
+      console.log(`[🎥] Mendeteksi video pada Threads, mengunduh media video...`);
+      const videoMedia = await fetchMediaAttachment(targetObj.media_url);
+      if (videoMedia) return videoMedia;
+    }
+    // Jika video gagal diunduh atau terlalu besar, gunakan cover thumbnail-nya
+    if (targetObj.thumbnail_url) {
+      console.log(`[📷] Menggunakan cover thumbnail video untuk OCR visual...`);
+      return await fetchMediaAttachment(targetObj.thumbnail_url);
+    }
+  }
+
+  // 3. Cek apakah ada gambar langsung di Threads (IMAGE / CAROUSEL)
+  const imageUrl = targetObj.media_url || targetObj.thumbnail_url;
+  if (imageUrl && targetObj.media_type !== 'TEXT_POST') {
+    console.log(`[📷] Mendeteksi gambar pada postingan Threads, mengunduh untuk analisis OCR...`);
+    return await fetchMediaAttachment(imageUrl);
+  }
+
+  // 4. Cek apakah ada link gambar langsung di dalam teks (.jpg, .png, .webp)
+  const imgUrlMatch = combinedText.match(/https?:\/\/[^\s]+?\.(jpg|jpeg|png|webp)(\?[^\s]*)?/i);
+  if (imgUrlMatch) {
+    const directImgUrl = imgUrlMatch[0].replace(/[),.]+$/, '');
+    console.log(`[📷] Mendeteksi link gambar di dalam teks: ${directImgUrl}`);
+    return await fetchMediaAttachment(directImgUrl);
+  }
+
+  return null;
 }
 
 const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
@@ -475,17 +532,17 @@ async function checkAndReply() {
             text: reply.text
           });
 
-          // Cek apakah komentar atau postingan memiliki gambar / video
-          let imageBase64 = null;
-          const mediaUrl = extractImageUrl(reply) || extractImageUrl(post);
-          if (mediaUrl) {
-            console.log(`[📷] Mendeteksi gambar/video di komentar/postingan, memproses dengan AI Vision...`);
-            imageBase64 = await fetchImageAsBase64(mediaUrl);
+          // Cek apakah komentar atau postingan memiliki media (gambar, video, atau link dokumen)
+          let mediaAttachment = await detectMediaAttachment(reply, post.text);
+          if (!mediaAttachment && post) {
+            mediaAttachment = await detectMediaAttachment(post, reply.text);
           }
 
           let replyText = (reply.text || '').replace(/@\w+/g, '').trim();
           if (!replyText) {
-            replyText = imageBase64 ? 'Tolong jelaskan atau baca isi gambar ini.' : 'Halo!';
+            replyText = mediaAttachment
+              ? 'Tolong baca dan lakukan OCR terhadap teks pada lampiran (gambar/video/dokumen) ini serta jelaskan isinya secara tuntas.'
+              : 'Halo!';
           }
 
           let fullPrompt = replyText;
@@ -493,8 +550,8 @@ async function checkAndReply() {
             fullPrompt = `Konteks Postingan: "${post.text}"\nKomentar dari @${reply.username}: "${replyText}"`;
           }
 
-          // GENERASI JAWABAN (VISION / TEKS)
-          const aiResult = await generateAIResponse(fullPrompt, imageBase64);
+          // GENERASI JAWABAN (VISION / OCR / MULTIMODAL / TEKS)
+          const aiResult = await generateAIResponse(fullPrompt, mediaAttachment);
 
           // KIRIM REPLY BERANTAI (LOOPING/CHUNKING)
           const chainResult = await sendThreadReplyChain(reply.id, aiResult.answer);
@@ -539,45 +596,39 @@ async function checkAndReply() {
           text: mention.text
         });
 
-        // Ambil teks & gambar dari postingan induk / video agar AI paham konteks visual
+        // Ambil teks & media dari postingan induk agar AI paham konteks visual / dokumen
         let contextText = '';
-        let imageBase64 = null;
+        let mediaAttachment = null;
         const parentId = mention.replied_to?.id || mention.root_post?.id;
 
         if (parentId && parentId !== mention.id) {
           const parentDetail = await getPostDetail(parentId);
           if (parentDetail) {
             contextText = parentDetail.text || '';
-            const targetMedia = extractImageUrl(parentDetail);
-            if (targetMedia) {
-              console.log(`[📷] Mendeteksi gambar/video pada postingan induk, memproses dengan AI Vision...`);
-              imageBase64 = await fetchImageAsBase64(targetMedia);
-            }
+            mediaAttachment = await detectMediaAttachment(parentDetail, mention.text);
           }
         }
 
-        // Jika tidak ada di postingan induk, cek apakah mention langsung melampirkan media
-        if (!imageBase64) {
-          const directMedia = extractImageUrl(mention);
-          if (directMedia) {
-            console.log(`[📷] Mendeteksi gambar/video langsung pada mention, memproses dengan AI Vision...`);
-            imageBase64 = await fetchImageAsBase64(directMedia);
-          }
+        // Jika tidak ada di postingan induk, cek apakah mention langsung melampirkan media/dokumen
+        if (!mediaAttachment) {
+          mediaAttachment = await detectMediaAttachment(mention, contextText);
         }
 
         // Hilangkan tag @username dari prompt
         let cleanPrompt = (mention.text || '').replace(/@\w+/g, '').trim();
         if (!cleanPrompt) {
-          cleanPrompt = imageBase64 ? 'Tolong baca teks pada gambar ini atau jelaskan isinya secara ringkas.' : 'Halo! Ada yang bisa saya bantu?';
+          cleanPrompt = mediaAttachment
+            ? 'Tolong baca dan lakukan OCR terhadap teks pada lampiran (gambar/video/dokumen) ini serta jelaskan isinya secara tuntas.'
+            : 'Halo! Ada yang bisa saya bantu?';
         }
 
         let fullPrompt = cleanPrompt;
         if (contextText) {
-          fullPrompt = `Konteks Postingan/Video yang dibahas: "${contextText}"\nPertanyaan/Komentar dari @${mention.username}: "${cleanPrompt}"`;
+          fullPrompt = `Konteks Postingan/Media yang dibahas: "${contextText}"\nPertanyaan/Komentar dari @${mention.username}: "${cleanPrompt}"`;
         }
 
-        // GENERASI JAWABAN (VISION / TEKS)
-        const aiResult = await generateAIResponse(fullPrompt, imageBase64);
+        // GENERASI JAWABAN (VISION / OCR / MULTIMODAL / TEKS)
+        const aiResult = await generateAIResponse(fullPrompt, mediaAttachment);
 
         // KIRIM REPLY BERANTAI (LOOPING/CHUNKING)
         const chainResult = await sendThreadReplyChain(mention.id, aiResult.answer);

@@ -28,7 +28,8 @@
 
 ## 🌟 Fitur Utama (Highlights)
 
-- ⚡ **Multi-Engine AI**: Mendukung integrasi **Meta AI** serta didukung oleh raksasa **NVIDIA Nemotron 550B Ultra**.
+- ⚡ **Multi-Engine AI**: Mendukung integrasi **Meta AI Web Scraper** (Multimodal Vision & OCR) serta didukung oleh raksasa **NVIDIA Nemotron 550B Ultra**.
+- 👁️ **Multimodal OCR Lengkap**: Mampu membaca teks secara akurat dari **Gambar** (`.png`, `.jpg`, `.webp`), **Video** (`.mp4`), serta tautan **Dokumen** (`.pdf`, `.docx`, `.xlsx`, `.txt`, `.csv`) yang dikirim atau dimention di Threads.
 - 🛡️ **Zero-Downtime Automatic Fallback**: Jika layanan utama mengalami kendala, bot secara otomatis beralih ke engine cadangan tanpa menghentikan pemantauan pesan.
 - 🧵 **Auto-Thread Looping**: Jawaban panjang (>430 karakter) otomatis dipecah menjadi rangkaian balasan berantai (`[1/2]`, `[2/2]`) agar tidak terpotong.
 - 🧠 **Context-Aware Intelligence**: Tidak hanya membaca komentar, bot mampu melacak dan memahami teks/caption dari postingan video atau gambar induknya (*root post*) secara otomatis.
@@ -88,9 +89,12 @@ Lalu buka file `.env` dan lengkapi konfigurasi berikut:
 
 ```env
 # AI Provider ("meta-ai" atau "nvidia")
-AI_PROVIDER=nvidia
+AI_PROVIDER=meta-ai
 
-# NVIDIA NIM (build.nvidia.com)
+# Meta AI Session Cookie (Untuk OCR Gambar, Video & Dokumen)
+META_AI_COOKIE="datr=...; ecto_1_sess=...;"
+
+# Fallback NVIDIA NIM (build.nvidia.com)
 NVIDIA_API_KEY=nvapi-xxxxxxxxxxxxxxxxxxxxxxxx
 NVIDIA_MODEL=nvidia/nemotron-3-ultra-550b-a55b
 ENABLE_FALLBACK=true
@@ -113,15 +117,16 @@ node index.js
 
 1. Masuk ke dashboard server Pterodactyl kamu (gunakan **Node.js Egg** v18 atau v20+).
 2. Buka menu **Files / File Manager**.
-3. Upload file:
+3. Upload file berikut:
    - `index.js`
    - `package.json`
-   - `.env` (isi dengan token & api keys kamu)
+   - Folder `scrape/` (berisi file scraping Meta AI)
+   - `.env` (isi dengan cookie & token Threads kamu)
 4. Buka tab **Console**, jalankan perintah:
    ```bash
    npm install
    ```
-5. Klik tombol **Start** server. Bot akan aktif 24/7 memantau Threads!
+5. Klik tombol **Start** server. Bot akan aktif 24/7 memantau Threads! Jika lingkungan server Pterodactyl tidak memiliki Chromium, bot secara otomatis beralih (*fallback*) ke **NVIDIA NIM** secara mulus tanpa error.
 
 ---
 
