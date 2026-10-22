@@ -433,10 +433,13 @@ async function sendThreadReply(replyToId, text) {
   throw new Error(`Gagal publish reply setelah retry: ${JSON.stringify(lastPublishError)}`);
 }
 
-// Membagi teks panjang menjadi beberapa bagian thread (looping) jika melebihi batas karakter Threads (~430 karakter)
-function splitTextIntoChunks(text, maxChunkLength = 430) {
+// Membagi teks panjang menjadi beberapa bagian thread (looping) maksimal 500 karakter Threads
+function splitTextIntoChunks(text, maxLimit = 500) {
   if (!text) return [];
-  if (text.length <= maxChunkLength) return [text];
+  if (text.length <= maxLimit) return [text];
+
+  const indicatorReserve = 9; // Alokasi karakter untuk indikator "\n\n[1/N]"
+  const maxChunkLength = maxLimit - indicatorReserve; // ~491 karakter teks isi
 
   const rawChunks = [];
   let remaining = text.trim();
@@ -447,18 +450,29 @@ function splitTextIntoChunks(text, maxChunkLength = 430) {
       break;
     }
 
-    // Cari titik potong alami: enter (\n), titik kalimat (. ), atau spasi
+    // 1. Coba potong di enter (\n) jika berada di rentang 80% - 100%
     let sliceIndex = remaining.lastIndexOf('\n', maxChunkLength);
-    if (sliceIndex === -1 || sliceIndex < maxChunkLength * 0.5) {
+    if (sliceIndex !== -1 && sliceIndex >= maxChunkLength * 0.8) {
+      // Potong di enter
+    } else {
+      // 2. Coba potong di akhir kalimat (titik) jika berada di rentang 80% - 100%
       sliceIndex = remaining.lastIndexOf('. ', maxChunkLength);
-      if (sliceIndex !== -1 && sliceIndex >= maxChunkLength * 0.4) {
-        sliceIndex += 1;
+      if (sliceIndex !== -1 && sliceIndex >= maxChunkLength * 0.8) {
+        sliceIndex += 1; // Sertakan tanda titik
+      } else {
+        // 3. Coba potong di tanda koma jika berada di rentang 85% - 100%
+        sliceIndex = remaining.lastIndexOf(', ', maxChunkLength);
+        if (sliceIndex !== -1 && sliceIndex >= maxChunkLength * 0.85) {
+          sliceIndex += 1; // Sertakan tanda koma
+        } else {
+          // 4. Cari spasi terakhir agar mentok mendekati batas maksimal 500 karakter
+          sliceIndex = remaining.lastIndexOf(' ', maxChunkLength);
+        }
       }
     }
-    if (sliceIndex === -1 || sliceIndex < maxChunkLength * 0.4) {
-      sliceIndex = remaining.lastIndexOf(' ', maxChunkLength);
-    }
-    if (sliceIndex === -1) {
+
+    // Fallback jika tidak ada spasi: potong tepat di batas maksimal
+    if (sliceIndex === -1 || sliceIndex < 50) {
       sliceIndex = maxChunkLength;
     }
 
@@ -467,9 +481,12 @@ function splitTextIntoChunks(text, maxChunkLength = 430) {
     remaining = remaining.substring(sliceIndex).trim();
   }
 
-  // Jika terbagi lebih dari 1 bagian, tambahkan indikator [1/N], [2/N]
+  // Tambahkan indikator [1/N], [2/N] dan pastikan total panjang tidak pernah melebihi 500 karakter
   if (rawChunks.length > 1) {
-    return rawChunks.map((c, i) => `${c}\n\n[${i + 1}/${rawChunks.length}]`);
+    return rawChunks.map((c, i) => {
+      const full = `${c}\n\n[${i + 1}/${rawChunks.length}]`;
+      return full.length > maxLimit ? full.substring(0, maxLimit) : full;
+    });
   }
 
   return rawChunks;
@@ -477,7 +494,7 @@ function splitTextIntoChunks(text, maxChunkLength = 430) {
 
 // Mengirim balasan berantai (thread chain) jika teks terbagi menjadi beberapa bagian
 async function sendThreadReplyChain(targetId, text) {
-  const chunks = splitTextIntoChunks(text, 430);
+  const chunks = splitTextIntoChunks(text, 500);
   let parentReplyId = targetId;
   const sentIds = [];
 
