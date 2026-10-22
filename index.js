@@ -1,6 +1,7 @@
 import 'dotenv/config';
 import fs from 'fs';
 import OpenAI from 'openai';
+import MetaAIMultimodal from './scrape/metaAiMultimodal.js';
 
 // ========================================================
 // KONFIGURASI DARI .ENV
@@ -126,9 +127,41 @@ function cleanAiResponse(text) {
 // ========================================================
 
 // Handler untuk integrasi scraper Meta AI
+let metaAiInstance = null;
+
+function getMetaAIClient() {
+  if (!metaAiInstance) {
+    const cookieString = process.env.META_AI_COOKIE || (
+      (process.env.datr || process.env.ecto_1_sess || process.env.abra_sess)
+        ? `datr=${process.env.datr || ''}; ecto_1_sess=${process.env.ecto_1_sess || ''}; abra_sess=${process.env.abra_sess || ''};`
+        : ''
+    );
+    metaAiInstance = new MetaAIMultimodal(cookieString);
+  }
+  return metaAiInstance;
+}
+
 async function callMetaAI(prompt, imageBase64 = null) {
-  // TODO: Sambungkan logika scraping Meta AI di sini
-  throw new Error('Scraper Meta AI belum terhubung. Silakan pasang modul scraper Meta AI Anda.');
+  const client = getMetaAIClient();
+
+  let options = { thinkingMode: true };
+  if (imageBase64) {
+    const base64Data = imageBase64.replace(/^data:[^;]+;base64,/, '');
+    const mimeMatch = imageBase64.match(/^data:([^;]+);base64,/);
+    const mimeType = mimeMatch ? mimeMatch[1] : 'image/jpeg';
+    const buffer = Buffer.from(base64Data, 'base64');
+
+    options.fileBuffer = buffer;
+    options.mimeType = mimeType;
+    options.fileName = 'attachment.jpg';
+  }
+
+  const result = await client.ask(prompt, options);
+  return {
+    answer: cleanAiResponse(result.answer),
+    provider: imageBase64 ? 'Meta AI (Multimodal)' : 'Meta AI',
+    model: 'Llama 3.3 (Meta AI)'
+  };
 }
 
 async function callNvidia(prompt, imageBase64 = null) {
