@@ -1,7 +1,7 @@
 import 'dotenv/config';
 import fs from 'fs';
 import OpenAI from 'openai';
-import MetaAIMultimodal from './scrape/metaAiMultimodal.js';
+import MetaAiPuppeteer from './scrape/metaAiPuppeteer.js';
 
 // ========================================================
 // KONFIGURASI DARI .ENV
@@ -126,17 +126,12 @@ function cleanAiResponse(text) {
 // GENERASI RESPON AI (META AI SCRAPER & NVIDIA NIM)
 // ========================================================
 
-// Handler untuk integrasi scraper Meta AI
+// Handler untuk integrasi scraper Meta AI (Puppeteer)
 let metaAiInstance = null;
 
 function getMetaAIClient() {
   if (!metaAiInstance) {
-    const cookieString = process.env.META_AI_COOKIE || (
-      (process.env.datr || process.env.ecto_1_sess || process.env.abra_sess)
-        ? `datr=${process.env.datr || ''}; ecto_1_sess=${process.env.ecto_1_sess || ''}; abra_sess=${process.env.abra_sess || ''};`
-        : ''
-    );
-    metaAiInstance = new MetaAIMultimodal(cookieString);
+    metaAiInstance = new MetaAiPuppeteer(process.env.META_AI_COOKIE);
   }
   return metaAiInstance;
 }
@@ -144,7 +139,7 @@ function getMetaAIClient() {
 async function callMetaAI(prompt, imageBase64 = null) {
   const client = getMetaAIClient();
 
-  let options = { thinkingMode: true };
+  let options = {};
   if (imageBase64) {
     const base64Data = imageBase64.replace(/^data:[^;]+;base64,/, '');
     const mimeMatch = imageBase64.match(/^data:([^;]+);base64,/);
@@ -153,14 +148,13 @@ async function callMetaAI(prompt, imageBase64 = null) {
 
     options.fileBuffer = buffer;
     options.mimeType = mimeType;
-    options.fileName = 'attachment.jpg';
   }
 
   const result = await client.ask(prompt, options);
   return {
     answer: cleanAiResponse(result.answer),
-    provider: imageBase64 ? 'Meta AI (Multimodal)' : 'Meta AI',
-    model: 'Llama 3.3 (Meta AI)'
+    provider: 'Meta AI',
+    model: 'Web Scraper'
   };
 }
 
