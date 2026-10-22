@@ -15,12 +15,12 @@
 
 [![Node.js](https://img.shields.io/badge/Node.js-v18%2B%20%7C%20v22-339933?logo=node.js&logoColor=white)](https://nodejs.org/)
 [![Threads API](https://img.shields.io/badge/Meta-Threads_API_Official-000000?logo=threads&logoColor=white)](https://developers.facebook.com/)
-[![Groq LPUs](https://img.shields.io/badge/Groq-LPU_High_Speed-F55036?logo=groq&logoColor=white)](https://groq.com/)
+[![Meta AI](https://img.shields.io/badge/Meta_AI-Scraper_Ready-0084FF?logo=meta&logoColor=white)](https://www.meta.ai/)
 [![NVIDIA NIM](https://img.shields.io/badge/NVIDIA-NIM_Nemotron_550B-76B900?logo=nvidia&logoColor=white)](https://build.nvidia.com/)
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
 [![Author](https://img.shields.io/badge/Author-rafli6373-purple.svg)](https://github.com/rafli6373)
 
-**PAYMIRA BOT AI** adalah bot asisten cerdas otomatis berbasis AI multidisiplin untuk platform sosial media **Threads (Meta)**. Ditenagai oleh arsitektur **Dual-Engine (Groq Multi-Key & NVIDIA NIM)** dengan kecepatan respons ultra-tinggi (< 1 detik), kemampuan rotasi key otomatis tanpa takut terkena *rate limit*, pemahaman konteks postingan induk (*context-awareness*), serta siap dijalankan 24/7 di **Pterodactyl Panel** maupun server lokal secara **100% Gratis**.
+**PAYMIRA BOT AI** adalah bot asisten cerdas otomatis berbasis AI multidisiplin untuk platform sosial media **Threads (Meta)**. Ditenagai oleh arsitektur **Meta AI Scraper & NVIDIA NIM** dengan kecepatan respons tinggi, pemahaman konteks postingan induk (*context-awareness*), dukungan balasan thread berantai (*looping*), serta siap dijalankan 24/7 di **Pterodactyl Panel** maupun server lokal secara **100% Gratis**.
 
 ---
 
@@ -28,12 +28,12 @@
 
 ## 🌟 Fitur Utama (Highlights)
 
-- ⚡ **Ultra-Fast Dual AI Engine**: Ditenagai oleh model mutakhir **Qwen 3.8 27B** di jaringan LPUs Groq dan didukung oleh raksasa **NVIDIA Nemotron 550B Ultra**.
-- 🎲 **Smart Multi-Key Rotation**: Mendukung hingga puluhan Groq API Key sekaligus dengan sistem acak (*load balancing*) dan *auto-retry* saat ada key yang mencapai batas limit kuota.
+- ⚡ **Multi-Engine AI**: Mendukung integrasi **Meta AI** serta didukung oleh raksasa **NVIDIA Nemotron 550B Ultra**.
 - 🛡️ **Zero-Downtime Automatic Fallback**: Jika layanan utama mengalami kendala, bot secara otomatis beralih ke engine cadangan tanpa menghentikan pemantauan pesan.
+- 🧵 **Auto-Thread Looping**: Jawaban panjang (>430 karakter) otomatis dipecah menjadi rangkaian balasan berantai (`[1/2]`, `[2/2]`) agar tidak terpotong.
 - 🧠 **Context-Aware Intelligence**: Tidak hanya membaca komentar, bot mampu melacak dan memahami teks/caption dari postingan video atau gambar induknya (*root post*) secara otomatis.
 - 🏛️ **Expert Persona (Pakar Multidisiplin)**: Dikonfigurasi dengan karakter analis tajam, objektif, berbasis data, profesional di bidang politik, ekonomi, sosial nasional (Indonesia) dan global.
-- 🎨 **Futuristic Cyberpunk Terminal**: Tampilan log interaktif dengan animasi pembuka neon glitch, moving ASCII spinner, serta format kotak pesan cool & estetik.
+- 🎨 **Futuristic Terminal UI**: Tampilan log interaktif dengan format kotak pesan cool & estetik.
 - 🛑 **Anti-Spam Memory System**: Dilengkapi database deduplikasi lokal (`replied_ids.json`) untuk mencegah bot membalas pesan yang sama berulang kali.
 - ☁️ **100% Pterodactyl & Docker Ready**: Dibuat dengan dependensi minimal dan arsitektur ringan yang siap dideploy langsung di panel hosting Pterodactyl.
 
@@ -52,9 +52,9 @@
          │
          ├──► Ambil Caption Postingan Induk (Context Awareness)
          │
-         ├──► [ Engine 1: Groq LPUs ] ──► Rotasi Acak (Key 1..N)
+         ├──► [ Engine 1: Meta AI Scraper ]
          │           │
-         │           ▼ (Jika limit/error)
+         │           ▼ (Jika kendala/fallback aktif)
          ├──► [ Engine 2: NVIDIA NIM ] ──► Nemotron 550B Ultra
          │
          ▼  (Terapkan Jeda Sinkronisasi Meta 2.5s + Auto-Retry)
@@ -87,12 +87,8 @@ cp .env.example .env
 Lalu buka file `.env` dan lengkapi konfigurasi berikut:
 
 ```env
-# AI Provider ("groq" atau "nvidia")
-AI_PROVIDER=groq
-
-# Kumpulan API Key Groq (pisahkan dengan koma untuk rotasi otomatis)
-GROQ_API_KEYS=gsk_key1,gsk_key2,gsk_key3,gsk_key4,gsk_key5
-GROQ_MODEL=qwen/qwen3.8-27b
+# AI Provider ("meta-ai" atau "nvidia")
+AI_PROVIDER=nvidia
 
 # NVIDIA NIM (build.nvidia.com)
 NVIDIA_API_KEY=nvapi-xxxxxxxxxxxxxxxxxxxxxxxx
@@ -150,7 +146,7 @@ node index.js
 ╚═════════════════════════════════════════════════════╝
 
 ╔══════『 BALASAN AI TERKIRIM 』══════════════════════╗
-║ ⚡ Engine : GROQ (qwen/qwen3.8-27b)
+║ ⚡ Engine : NVIDIA (nvidia/nemotron-3-ultra-550b-a55b)
 ║ 🎯 To     : @Rafli6373
 ║ 🤖 Respon : Fenomena buzzer di ranah politik melemahkan diskursus publik...
 ║ ✅ Status : Berhasil Terkirim ke Threads

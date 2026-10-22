@@ -6,9 +6,7 @@ import OpenAI from 'openai';
 // KONFIGURASI DARI .ENV
 // ========================================================
 let {
-  AI_PROVIDER = 'groq',
-  GROQ_API_KEYS = '',
-  GROQ_MODEL = 'qwen/qwen3.8-27b',
+  AI_PROVIDER = 'nvidia',
   NVIDIA_API_KEY,
   NVIDIA_MODEL = 'nvidia/nemotron-3-ultra-550b-a55b',
   ENABLE_FALLBACK = 'true',
@@ -35,12 +33,6 @@ const CLEAN_BOT_USERNAME = (BOT_USERNAME || '').replace(/[@"'\s]/g, '').toLowerC
 const BOT_START_TIME = Date.now();
 
 const DB_FILE = './replied_ids.json';
-
-// Kumpulkan dan parsing semua Groq API Keys
-const groqKeyPool = (GROQ_API_KEYS || '')
-  .split(',')
-  .map(k => k.replace(/["'\s[\]]/g, '').trim())
-  .filter(k => k.startsWith('gsk_'));
 
 // Inisialisasi Klien OpenAI untuk NVIDIA
 const nvidiaClient = NVIDIA_API_KEY
@@ -130,66 +122,13 @@ function cleanAiResponse(text) {
 }
 
 // ========================================================
-// GENERASI RESPON AI (GROQ ROTASI & NVIDIA DENGAN VISION)
+// GENERASI RESPON AI (META AI SCRAPER & NVIDIA NIM)
 // ========================================================
-async function callGroqWithRotation(prompt, imageBase64 = null) {
-  if (groqKeyPool.length === 0) {
-    throw new Error('Tidak ada Groq API Key valid yang tersedia di .env!');
-  }
 
-  const shuffledKeys = [...groqKeyPool].sort(() => Math.random() - 0.5);
-
-  let lastError = null;
-  for (let i = 0; i < shuffledKeys.length; i++) {
-    const activeKey = shuffledKeys[i];
-    const maskedKey = `${activeKey.substring(0, 7)}...${activeKey.slice(-4)}`;
-
-    try {
-      const groqClient = new OpenAI({
-        apiKey: activeKey,
-        baseURL: 'https://api.groq.com/openai/v1'
-      });
-
-      // Susun pesan: jika ada gambar, gunakan format multimodal Vision
-      let userContent;
-      if (imageBase64) {
-        userContent = [
-          { type: 'text', text: prompt },
-          { type: 'image_url', image_url: { url: imageBase64 } }
-        ];
-      } else {
-        userContent = prompt;
-      }
-
-      const response = await groqClient.chat.completions.create({
-        model: GROQ_MODEL,
-        messages: [
-          {
-            role: 'system',
-            content: AI_SYSTEM_PROMPT
-          },
-          {
-            role: 'user',
-            content: userContent
-          }
-        ],
-        temperature: 0.7,
-        max_tokens: 800
-      });
-
-      const content = response.choices[0]?.message?.content || '';
-      return {
-        answer: cleanAiResponse(content),
-        provider: imageBase64 ? 'Groq (Vision Multimodal)' : 'Groq',
-        model: GROQ_MODEL
-      };
-    } catch (err) {
-      console.warn(`[!] Groq Key (${maskedKey}) error: ${err.message}. Mencoba key lain...`);
-      lastError = err;
-    }
-  }
-
-  throw lastError || new Error('Semua Groq API Keys yang dipasang gagal!');
+// Handler untuk integrasi scraper Meta AI
+async function callMetaAI(prompt, imageBase64 = null) {
+  // TODO: Sambungkan logika scraping Meta AI di sini
+  throw new Error('Scraper Meta AI belum terhubung. Silakan pasang modul scraper Meta AI Anda.');
 }
 
 async function callNvidia(prompt, imageBase64 = null) {
@@ -231,18 +170,11 @@ async function callNvidia(prompt, imageBase64 = null) {
 async function generateAIResponse(prompt, imageBase64 = null) {
   const isFallbackEnabled = ENABLE_FALLBACK === 'true';
 
-  if (AI_PROVIDER.toLowerCase() === 'groq') {
+  if (AI_PROVIDER.toLowerCase() === 'meta-ai' || AI_PROVIDER.toLowerCase() === 'meta') {
     try {
-      return await callGroqWithRotation(prompt, imageBase64);
+      return await callMetaAI(prompt, imageBase64);
     } catch (err) {
-      console.warn(`[!] Groq Vision/Teks gagal (${err.message})`);
-      // Jika gagal saat membawa gambar, coba sekali lagi dalam mode teks murni
-      if (imageBase64) {
-        try {
-          console.log(`[↺] Mencoba ulang Groq dengan mode teks murni...`);
-          return await callGroqWithRotation(prompt, null);
-        } catch {}
-      }
+      console.warn(`[!] Meta AI gagal (${err.message})`);
       if (isFallbackEnabled && nvidiaClient) {
         console.log(`[↺] Beralih otomatis ke Fallback NVIDIA NIM...`);
         return await callNvidia(prompt, imageBase64);
@@ -254,9 +186,9 @@ async function generateAIResponse(prompt, imageBase64 = null) {
       return await callNvidia(prompt, imageBase64);
     } catch (err) {
       console.warn(`[!] NVIDIA gagal (${err.message})`);
-      if (isFallbackEnabled && groqKeyPool.length > 0) {
-        console.log(`[↺] Beralih otomatis ke Fallback Groq (Key Rotasi)...`);
-        return await callGroqWithRotation(prompt, imageBase64);
+      if (isFallbackEnabled) {
+        console.log(`[↺] Beralih otomatis ke Fallback Meta AI...`);
+        return await callMetaAI(prompt, imageBase64);
       }
       throw err;
     }

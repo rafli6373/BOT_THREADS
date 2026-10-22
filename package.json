@@ -1,7 +1,7 @@
 {
   "name": "threads-ai-bot",
   "version": "1.0.0",
-  "description": "AI Threads Bot with Groq and NVIDIA NIM Support",
+  "description": "AI Threads Bot with Meta AI and NVIDIA NIM Support",
   "type": "module",
   "main": "index.js",
   "scripts": {
