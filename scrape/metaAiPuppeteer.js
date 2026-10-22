@@ -1,4 +1,4 @@
-import puppeteer from 'puppeteer-core';
+import puppeteer from 'puppeteer';
 import fs from 'fs';
 import path from 'path';
 import os from 'os';
@@ -11,21 +11,30 @@ class MetaAiPuppeteer {
     this.isBusy = false;
   }
 
-  findChromePath() {
+  async findChromePath() {
     if (process.env.CHROME_PATH && fs.existsSync(process.env.CHROME_PATH)) {
       return process.env.CHROME_PATH;
     }
     const defaultPaths = [
-      'C:\\Program Files\\Google\\Chrome\\Application\\chrome.exe',
-      'C:\\Program Files (x86)\\Google\\Chrome\\Application\\chrome.exe',
       '/usr/bin/google-chrome',
       '/usr/bin/google-chrome-stable',
       '/usr/bin/chromium',
-      '/usr/bin/chromium-browser'
+      '/usr/bin/chromium-browser',
+      '/usr/lib/chromium/chrome',
+      '/snap/bin/chromium',
+      'C:\\Program Files\\Google\\Chrome\\Application\\chrome.exe',
+      'C:\\Program Files (x86)\\Google\\Chrome\\Application\\chrome.exe'
     ];
     for (const p of defaultPaths) {
       if (fs.existsSync(p)) return p;
     }
+
+    // Cek biner bawaan Puppeteer (didownload saat npm install)
+    try {
+      const bundled = await puppeteer.executablePath();
+      if (bundled && fs.existsSync(bundled)) return bundled;
+    } catch {}
+
     return null;
   }
 
@@ -57,22 +66,29 @@ class MetaAiPuppeteer {
       return this.browser;
     }
 
-    const chromePath = this.findChromePath();
-    if (!chromePath) {
-      throw new Error('Google Chrome / Chromium tidak ditemukan di sistem. Silakan tentukan CHROME_PATH di .env');
-    }
+    const chromePath = await this.findChromePath();
 
-    this.browser = await puppeteer.launch({
-      executablePath: chromePath,
+    const launchOptions = {
       headless: 'new',
       args: [
         '--no-sandbox',
         '--disable-setuid-sandbox',
+        '--disable-dev-shm-usage',
+        '--disable-gpu',
+        '--disable-software-rasterizer',
         '--disable-blink-features=AutomationControlled',
         '--disable-infobars',
-        '--window-size=1280,800'
+        '--window-size=1280,800',
+        '--no-first-run',
+        '--no-zygote'
       ]
-    });
+    };
+
+    if (chromePath) {
+      launchOptions.executablePath = chromePath;
+    }
+
+    this.browser = await puppeteer.launch(launchOptions);
 
     this.browser.on('disconnected', () => {
       this.browser = null;
