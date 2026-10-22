@@ -254,6 +254,25 @@ async function getMentions() {
   return data.data || [];
 }
 
+// Mengambil balasan yang pernah dikirim oleh bot (untuk memantau balasan lanjutan dari user)
+async function getMyRecentReplies() {
+  const url = `https://graph.threads.net/v1.0/me/replies?fields=id,text,timestamp&limit=10&access_token=${CLEAN_TOKEN}`;
+  const res = await fetch(url);
+  const data = await res.json();
+  if (!res.ok) return [];
+  return data.data || [];
+}
+
+// Mengambil balasan langsung ke sebuah postingan / balasan bot
+async function getRepliesToMedia(mediaId) {
+  if (!mediaId) return [];
+  const url = `https://graph.threads.net/v1.0/${mediaId}/replies?fields=id,text,username,timestamp,media_type,media_url,thumbnail_url&access_token=${CLEAN_TOKEN}`;
+  const res = await fetch(url);
+  const data = await res.json();
+  if (!res.ok) return [];
+  return data.data || [];
+}
+
 // Mengambil detail lengkap postingan induk (teks + gambar/video thumbnail)
 async function getPostDetail(postId) {
   if (!postId) return null;
@@ -649,6 +668,69 @@ async function checkAndReply() {
       }
     }
 
+    // 3. Cek balasan lanjutan (sub-reply) ke komentar yang pernah dikirim oleh bot
+    const myReplies = await getMyRecentReplies();
+    for (const botReply of myReplies) {
+      const subReplies = await getRepliesToMedia(botReply.id);
+      for (const sub of subReplies) {
+        if (hasReplied(sub.id)) continue;
+        if (sub.username && sub.username.toLowerCase() === CLEAN_BOT_USERNAME) continue;
+        if (!isUserAllowed(sub.username)) continue;
+
+        // Abaikan pesan yang dibuat sebelum bot dinyalakan
+        const subTime = new Date(sub.timestamp).getTime();
+        if (subTime < BOT_START_TIME - 30000) {
+          saveRepliedId(sub.id);
+          continue;
+        }
+
+        isProcessing = true;
+        try {
+          foundNew++;
+          logIncomingMessage({
+            type: 'Balasan Komentar Bot (Thread Sub-Reply)',
+            from: sub.username,
+            text: sub.text
+          });
+
+          // Cek apakah balasan ini melampirkan media/gambar/dokumen
+          let mediaAttachment = await detectMediaAttachment(sub, botReply.text);
+
+          let cleanText = (sub.text || '').replace(/@\w+/g, '').trim();
+          if (!cleanText) {
+            cleanText = mediaAttachment
+              ? 'Tolong baca dan lakukan OCR terhadap teks pada lampiran (gambar/video/dokumen) ini.'
+              : 'Halo!';
+          }
+
+          let fullPrompt = cleanText;
+          if (botReply.text) {
+            fullPrompt = `Konteks Pesan Bot Sebelumnya: "${botReply.text}"\nBalasan Lanjutan dari @${sub.username}: "${cleanText}"`;
+          }
+
+          // GENERASI JAWABAN (VISION / OCR / MULTIMODAL / TEKS)
+          const aiResult = await generateAIResponse(fullPrompt, mediaAttachment);
+
+          // KIRIM REPLY BERANTAI (LOOPING/CHUNKING)
+          const chainResult = await sendThreadReplyChain(sub.id, aiResult.answer);
+          saveRepliedId(sub.id);
+
+          // LOG BALASAN AI (ASCII BOX)
+          logAiReply({
+            provider: aiResult.provider,
+            model: aiResult.model,
+            reply: aiResult.answer + (chainResult.totalParts > 1 ? ` (${chainResult.totalParts} bagian bersambung)` : ''),
+            to: sub.username
+          });
+        } catch (itemErr) {
+          console.error(`[!] Gagal memproses balasan lanjutan dari @${sub.username}:`, itemErr.message);
+          saveRepliedId(sub.id);
+        } finally {
+          isProcessing = false;
+        }
+      }
+    }
+
   } catch (err) {
     isProcessing = false;
     console.error(`\n[!] Error saat polling [${now}]:`, err.message);
@@ -665,11 +747,19 @@ async function start() {
   // Ini menandai semua mention & komentar lama agar bot TIDAK membalas pesan masa lalu
   console.log('[*] Menyelaraskan pesan lama Threads agar tidak terjadi spam...');
   try {
-    const [mentions, threads] = await Promise.all([getMentions(), getRecentThreads()]);
+    const [mentions, threads, myReplies] = await Promise.all([
+      getMentions(),
+      getRecentThreads(),
+      getMyRecentReplies()
+    ]);
     for (const m of mentions) saveRepliedId(m.id);
     for (const t of threads) {
       const replies = await getThreadReplies(t.id);
       for (const r of replies) saveRepliedId(r.id);
+    }
+    for (const r of myReplies) {
+      const subReplies = await getRepliesToMedia(r.id);
+      for (const s of subReplies) saveRepliedId(s.id);
     }
     console.log('[✓] Sinkronisasi selesai. Bot siap merespon pesan baru!\n');
   } catch (e) {
